@@ -3,6 +3,7 @@ package testing
 import (
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/AgnopraxLab/D2PFuzz/blob"
@@ -12,6 +13,7 @@ import (
 	"github.com/AgnopraxLab/D2PFuzz/utils"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 )
 
 // BlobSingleNodeTest implements single-node blob transaction testing
@@ -182,6 +184,13 @@ func (t *BlobSingleNodeTest) Run(cfg *config.Config) error {
 	fmt.Printf("📋 Blob nonce resolved: %s -> %d\n", nonceStr, nonce)
 	fmt.Println()
 
+	// Optional: DevP2P suite initialize to align with demo
+	if client.GetSuite() != nil {
+		if err := client.GetSuite().InitializeAndConnect(); err != nil {
+			return fmt.Errorf("suite initialize failed: %w", err)
+		}
+	}
+
 	// Send blob transactions
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("  Sending Blob Transactions")
@@ -206,6 +215,7 @@ func (t *BlobSingleNodeTest) Run(cfg *config.Config) error {
 			WithFrom(fromAccount).
 			WithTo(toAccount).
 			WithNonce(nonce).
+			WithCount(1).
 			WithMaxFeePerBlobGas(maxFeePerBlobGasBig)
 
 		// Generate and add blobs
@@ -251,18 +261,107 @@ func (t *BlobSingleNodeTest) Run(cfg *config.Config) error {
 		blobCost, _ := builder.EstimateBlobCost()
 		fmt.Printf("   ⛽ Estimated blob gas: %d (cost: %s wei)\n", blobGas, blobCost.String())
 
-		// Send the transaction
-		opts := transaction.DefaultSendOptions()
-		opts.Verify = true // Skip immediate verification for speed
+		// 在最终发送前，仅打印本轮“最后一笔”交易的关键参数，帮助理解配置效果
+		if len(blobTx) > 0 && i == totalBlobTxs-1 {
+			tx := blobTx[0]
+			// 打印基础字段
+			fmt.Println("   🧾 Final Tx Parameters:")
+			fmt.Printf("      Type: %d (BlobTxType=3)\n", tx.Type())
+			fmt.Printf("      ChainID: %s\n", tx.ChainId().String())
+			fmt.Printf("      Nonce: %d\n", tx.Nonce())
+			fmt.Printf("      To: %s\n", func() string {
+				if tx.To() != nil {
+					return tx.To().Hex()
+				}
+				return "<nil>"
+			}())
+			fmt.Printf("      From(config): %s\n", fromAccount.Address)
+			// 通过 Cancun 签名器恢复 from 地址（如失败则打印错误）
+			if addr, err := types.Sender(types.NewCancunSigner(cfg.ChainID), tx); err == nil {
+				fmt.Printf("      From(recovered): %s\n", addr.Hex())
+			} else {
+				fmt.Printf("      From(recovered): <error: %v>\n", err)
+			}
+			fmt.Printf("      Value: %s wei\n", tx.Value().String())
+			fmt.Printf("      Gas: %d\n", tx.Gas())
+			fmt.Printf("      GasFeeCap: %s\n", tx.GasFeeCap().String())
+			fmt.Printf("      GasTipCap: %s\n", tx.GasTipCap().String())
+			// Blob 相关字段（如果为 BlobTx 则可用）
+			if tx.Type() == 3 {
+				feeCap := tx.BlobGasFeeCap()
+				if feeCap != nil {
+					fmt.Printf("      BlobFeeCap: %s\n", feeCap.String())
+				}
+				hashes := tx.BlobHashes()
+				if hashes != nil {
+					fmt.Printf("      BlobHashes: %d\n", len(hashes))
+					for bi, bh := range hashes {
+						fmt.Printf("        - blob[%d] hash: %s\n", bi, bh.Hex())
+					}
+				}
+			}
+		}
 
-		txHash, err := transaction.SendBlob(client, blobTx, opts)
-		if err != nil {
-			fmt.Printf("   ❌ Failed to send: %v\n", err)
+		// Send the transaction
+		// 使用 DevP2P Gossip 流发送 blob（宣告→拉取→回包），不经过 RPC
+		// BlobTxBuilder.Build 返回 types.Transactions，这里仅取首笔进行发送与验证
+		if len(blobTx) == 0 {
+			fmt.Printf("   ❌ No transactions built\n")
 			failCount++
 		} else {
-			fmt.Printf("   ✅ Sent! Hash: %s\n", txHash.Hex())
-			txHashes = append(txHashes, txHash)
-			successCount++
+			tx := blobTx[0]
+			// 根据配置选择负面或正向路径
+			sidecarMode := cfg.Test.BlobSingle.SidecarMode
+			var sendErr error
+			// 预先计算交易哈希，确保发送失败也能记录
+			txHash := tx.Hash()
+			switch sidecarMode {
+			case "missing":
+				sendErr = transaction.SendBlobViaGossipAllowMissing(client.GetSuite(), tx)
+			default:
+				sendErr = transaction.SendBlobViaGossip(client.GetSuite(), tx)
+			}
+			if sendErr != nil {
+				fmt.Printf("   ❌ Gossip send failed: %v\n", err)
+				failCount++
+				// 失败也记录哈希
+				txHashes = append(txHashes, txHash)
+			} else {
+				fmt.Printf("   ✅ Gossip sent! Hash: %s\n", txHash.Hex())
+				// 记录发送成功的交易哈希
+				txHashes = append(txHashes, txHash)
+
+				// DevP2P 验证：通过 GetPooledTransactions 查询确认入池
+				// Apply manual-mode timing parameters if provided
+				initialDelay := time.Duration(cfg.Test.BlobSingle.InitialDelayMS) * time.Millisecond
+				attempts := cfg.Test.BlobSingle.QueryAttempts
+				interval := time.Duration(cfg.Test.BlobSingle.QueryIntervalMS) * time.Millisecond
+				if attempts <= 0 {
+					attempts = 3
+				}
+				if interval <= 0 {
+					interval = 3 * time.Second
+				}
+				if initialDelay > 0 {
+					time.Sleep(initialDelay)
+				}
+
+				verified := false
+				for a := 0; a < attempts; a++ {
+					if err := transaction.Verify(client, []common.Hash{txHash}, 10*time.Second); err != nil {
+						fmt.Printf("   ⚠️  Verification attempt %d failed: %v\n", a+1, err)
+						time.Sleep(interval)
+						continue
+					}
+					verified = true
+					break
+				}
+				if verified {
+					successCount++
+				} else {
+					failCount++
+				}
+			}
 		}
 
 		nonce++
@@ -288,12 +387,21 @@ func (t *BlobSingleNodeTest) Run(cfg *config.Config) error {
 		fmt.Printf("📊 Average: %.2f tx/sec\n", float64(successCount)/duration.Seconds())
 	}
 
-	// Save transaction hashes to file (if enabled)
+	// Save transaction hashes to file with node annotation (if enabled)
 	if saveHashes && len(txHashes) > 0 {
-		if err := utils.WriteHashesToFile(txHashes, cfg.Paths.TxHashes); err != nil {
+		hashFile := "/home/kkk/workspaces/FIST/TxNetworkFuzz/cmd/manual/txhashes.txt"
+		var b strings.Builder
+		// 节点标注头（仅输出节点名称，不含索引）
+		b.WriteString(fmt.Sprintf("# %s\n", nodeName))
+		for _, h := range txHashes {
+			b.WriteString(h.Hex())
+			b.WriteString("\n")
+		}
+		content := b.String()
+		if err := utils.WriteStringToFile(hashFile, content); err != nil {
 			fmt.Printf("⚠️  Warning: Failed to save transaction hashes: %v\n", err)
 		} else {
-			fmt.Printf("💾 Saved %d transaction hash(es) to %s\n", len(txHashes), cfg.Paths.TxHashes)
+			fmt.Printf("💾 Saved %d transaction hash(es) to %s\n", len(txHashes), hashFile)
 		}
 	}
 

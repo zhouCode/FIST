@@ -164,11 +164,11 @@ func (suite *Suite) GetAllBlockHeaders() ([]*types.Header, error) {
 		},
 	}
 	// Read headers response.
-	if err = conn.Write(1, eth.GetBlockHeadersMsg, req); err != nil {
+    if err = conn.Write(ethProto, eth.GetBlockHeadersMsg, req); err != nil {
 		fmt.Printf("could not write to connection: %v", err)
 	}
 	headers := new(eth.BlockHeadersPacket)
-	if err = conn.ReadMsg(1, eth.BlockHeadersMsg, &headers); err != nil {
+    if err = conn.ReadMsg(ethProto, eth.BlockHeadersMsg, &headers); err != nil {
 		fmt.Printf("error reading msg: %v", err)
 	}
 	if got, want := headers.RequestId, req.RequestId; got != want {

@@ -20,11 +20,11 @@ p2p:
   
   # Bootstrap nodes (enode addresses)
   bootstrap_nodes:
-    - "enode://cf354e506a175e7e490e0ef174a6eb47ff1c96c0c55c89f3a2264e800c8cb6e80944a11b96f401396e48cddb7ab2f8ca405b6d27d77ca6d101936f5882e2e18d@172.16.0.12:30303"
-    - "enode://f3b6b1e2b323e6e6407add487b4dbaf6a7d04d57b427100413251e2995746ee9d1ec572a13f6b421be6f953cefe75349b840f332032b08dabb6833c974849c4c@172.16.0.16:30303"
-    - "enode://46fc6e684913cc94c2c4b48f0711edda10a518df660c95c562f4ceb5fb4eb14e3c98c43b035d878d73123b04e2e5d0ee2bafd206e00d34bdbb27b3c49938e3cd@172.16.0.13:30303"
-    - "enode://7cb109aae98b69c30ab84dbc8f817c55df46950d856968e8a9a6be05e8832352861b81c36e5405e9b83018626304e7de7d0b4aee919fbd698cd109e37dfdc72b@172.16.0.14:30303"
-    - "enode://b67a3343f6ae1b6243dd7915b526aa58bc41ac3c485e4ded2aa0f20216ac294f6ce8378a197aa8f7fe4c1a0c01f8b9be487473673ca7b6628baae79b6aa29270@172.16.0.15:30303"
+    - "enode://5dd11c91d4b331d77a364081c94a97cea89b48ef0578283d9fde8c77ef86cf1f503ff37ee3a001c419e6c55e1917629de0d8b228da95108b7ee44e76fd29135d@172.16.0.12:30303"  # el-1-geth-lighthouse (geth) -> RPC(service) http://el-1-geth-lighthouse:8545 | RPC(ip) http://172.16.0.12:8545
+    - "enode://2b8de2b9fd5657366f7b381d95a1de218bde7b4fb979a4d36be5a0a6cb3df28756e0fb1f69097ed53633ca79883ae7b4ca3feb3f31d12a3257b22d3ae0da043d@172.16.0.13:30303"  # el-2-nethermind-lighthouse (nethermind) -> RPC(service) http://el-2-nethermind-lighthouse:8545 | RPC(ip) http://172.16.0.13:8545
+    - "enode://7fc13658c5844998af76c63e7ed7333b32103874edf58a9dc65d1acda39376d598685fa208c8c77b085d679900ea2faae26560dfc023a7d090cc064fcd463f62@172.16.0.14:30303"  # el-3-reth-lighthouse (reth) -> RPC(service) http://el-3-reth-lighthouse:8545 | RPC(ip) http://172.16.0.14:8545
+    - "enode://f0be9732f1d6217a35e285567d7c10d6bab357868f65d14f91db32c213b1884e0697df15a42c898a5bfd148a2aae6bd116dd5ce4f8eb71f3c3e6172dd841b8c6@172.16.0.15:30303"  # el-4-erigon-lighthouse (erigon) -> RPC(service) http://el-4-erigon-lighthouse:8545 | RPC(ip) http://172.16.0.15:8545
+    - "enode://46513a9c6d70d0860c176c833729cffc66d5336560bf8aee14b241c658f81dc33ee7169b8f027942e80d77a66acd1a51a333ad7e79ca0af86b9ea8d5c1ea79d5@172.16.0.16:30303"  # el-5-besu-lighthouse (besu) -> RPC(service) http://el-5-besu-lighthouse:8545 | RPC(ip) http://172.16.0.16:8545 | P2P(ip-alt) 172.16.0.16:30303
 
 # File Paths Configuration
 paths:
@@ -34,11 +34,11 @@ paths:
 # Test Configuration
 test:
   # Test mode: single/multi/test-soft-limit/test-soft-limit-single/test-soft-limit-report/getPooledTxs/oneTransaction/largeTransactions/blob-single/blob-multi
-  mode: "single"
+  mode: "blob-multi"
   
   # Single node test settings
   single_node_index: 0          # Which node to test (0-4)
-  single_node_nonce: "18446744073709551515"       # Starting nonce ("auto" or specific number)
+  single_node_nonce: "auto"       # Starting nonce ("auto" or specific number)
   single_node_batch_size: 1     # Number of transactions to send
   
   # Multi-node test settings
@@ -64,12 +64,12 @@ test:
       - "l2-data"
     
     # Node configuration
-    single_node_index: 1              # Node index for single-node test
-    multi_node_indices: [0, 1, 2]      # Node indices for multi-node test
+    single_node_index: 0              # Node index for single-node test
+    multi_node_indices: [0, 1, 2,3,4]      # Node indices for multi-node test
     
     # Nonce configuration for blob tests
     single_node_nonce: "auto"          # "auto" or specific number
-    multi_node_nonces: ["auto", "auto", "auto"]  # Per-node nonce values
+    multi_node_nonces: ["auto", "auto", "auto", "auto", "auto"]  # Per-node nonce values
     
     # Account configuration (for legacy blob_test config)
     from_account_index: 0              # Index of sender account (default: 0)
@@ -77,7 +77,7 @@ test:
     
     # Verification configuration
     verify_beacon_api: true           # Whether to verify via Beacon API
-    beacon_endpoint: "http://127.0.0.1:32899"  # Beacon node endpoint
+    beacon_endpoint: "http://172.16.0.17:4000"  # Beacon node endpoint
     verify_after_blocks: 2             # Wait N blocks before verification
     
     # Batch test configuration
@@ -122,12 +122,12 @@ test:
   
   # Blob single-node test configuration (mode: "blob-single")
   blob_single:
-    node_index: 1
+    node_index: 0
     nonce: "auto"
     blob_count: 3
     blob_data_size: 131072
     max_fee_per_blob_gas: "2000000000"
-    generator_type: "l2-data"
+    generator_type: "l2-data"  # random/l2-data/pattern/zero
     total_transactions: 3
     send_interval_ms: 50
     verify_transactions: false
@@ -136,18 +136,19 @@ test:
     to_account_index: 5    # Index of receiver account in accounts array (default: 1)
   
   # Blob multi-node test configuration (mode: "blob-multi")
-  # blob_multi:
-  #   node_indices: [0, 1, 2]
-  #   nonces: ["auto", "auto", "auto"]
-  #   blob_count: 2
-  #   blob_data_size: 131072
-  #   max_fee_per_blob_gas: "1000000000"
-  #   generator_type: "random"
-  #   total_transactions: 30
-  #   send_interval_ms: 100
-  #   parallel_execution: true
-  #   verify_transactions: false
-  #   save_hashes: true
+  blob_multi:
+    node_indices: [0, 1, 2,3,4]
+    nonces: ["auto", "auto", "auto", "auto", "auto"]
+    blob_count: 3
+    blob_data_size: 131072
+    # sidecar_mode: "missing"      # missing/turnoff
+    max_fee_per_blob_gas: "1000000000"
+    generator_type: "random"
+    total_transactions: 30
+    send_interval_ms: 100
+    parallel_execution: true
+    verify_transactions: false
+    save_hashes: true
   
   # GetPooledTxs test configuration (mode: "GetPooledTxs")
   # get_pooled_txs:

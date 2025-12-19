@@ -285,6 +285,16 @@ type BlobSingleTestConfig struct {
 	SaveHashes         bool   `yaml:"save_hashes"`
 	FromAccountIndex   int    `yaml:"from_account_index"` // Index of sender account in accounts array (default: 0)
 	ToAccountIndex     int    `yaml:"to_account_index"`   // Index of receiver account in accounts array (default: 1)
+
+	// Manual-mode verification timing parameters (DevP2P only)
+	InitialDelayMS  int `yaml:"initial_delay_ms"`  // Delay before first verification attempt
+	QueryAttempts   int `yaml:"query_attempts"`    // Number of verification attempts
+	QueryIntervalMS int `yaml:"query_interval_ms"` // Interval between verification attempts
+
+	// Negative sidecar scenarios (DevP2P only)
+	SidecarMode           string `yaml:"sidecar_mode"`            // correct | missing | mismatched
+	MangleCommitmentIndex int    `yaml:"mangle_commitment_index"` // index of commitment to mangle in mismatched mode
+	SidecarNoiseBytes     int    `yaml:"sidecar_noise_bytes"`     // reserved for future use
 }
 
 // BlobMultiTestConfig configures blob multi-node test

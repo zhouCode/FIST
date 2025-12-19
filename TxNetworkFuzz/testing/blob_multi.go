@@ -3,6 +3,7 @@ package testing
 import (
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/AgnopraxLab/D2PFuzz/utils"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 )
 
 // BlobMultiNodeTest implements multi-node blob transaction testing
@@ -152,8 +154,10 @@ func (t *BlobMultiNodeTest) Run(cfg *config.Config) error {
 	var (
 		wg         sync.WaitGroup
 		mu         sync.Mutex
+		hashesMu   sync.Mutex
 		nodeStats  = make([]*NodeStats, len(nodeIndices))
 		globalFail int
+		nodeHashes = make(map[int][]common.Hash)
 	)
 
 	startTime := time.Now()
@@ -217,6 +221,7 @@ func (t *BlobMultiNodeTest) Run(cfg *config.Config) error {
 					WithFrom(fromAccount).
 					WithTo(toAccount).
 					WithNonce(nonce).
+					WithCount(1).
 					WithMaxFeePerBlobGas(maxFeePerBlobGasBig)
 
 				// Generate and add blobs
@@ -251,14 +256,59 @@ func (t *BlobMultiNodeTest) Run(cfg *config.Config) error {
 					continue
 				}
 
-				opts := transaction.DefaultSendOptions()
-				opts.Verify = false
+				// 在最终发送前，仅打印该节点“最后一笔”交易的关键参数
+				if len(blobTx) > 0 && j == totalTxs-1 {
+					tx := blobTx[0]
+					fmt.Printf("   🧾 Node %d (%s) Final Tx Parameters:\n", nodeIdx, stats.NodeName)
+					fmt.Printf("      Type: %d (BlobTxType=3)\n", tx.Type())
+					fmt.Printf("      ChainID: %s\n", tx.ChainId().String())
+					fmt.Printf("      Nonce: %d\n", tx.Nonce())
+					fmt.Printf("      To: %s\n", func() string {
+						if tx.To() != nil {
+							return tx.To().Hex()
+						}
+						return "<nil>"
+					}())
+					fmt.Printf("      From(config): %s\n", fromAccount.Address)
+					if addr, err := types.Sender(types.NewCancunSigner(cfg.ChainID), tx); err == nil {
+						fmt.Printf("      From(recovered): %s\n", addr.Hex())
+					} else {
+						fmt.Printf("      From(recovered): <error: %v>\n", err)
+					}
+					fmt.Printf("      Value: %s wei\n", tx.Value().String())
+					fmt.Printf("      Gas: %d\n", tx.Gas())
+					fmt.Printf("      GasFeeCap: %s\n", tx.GasFeeCap().String())
+					fmt.Printf("      GasTipCap: %s\n", tx.GasTipCap().String())
+					if tx.Type() == 3 {
+						feeCap := tx.BlobGasFeeCap()
+						if feeCap != nil {
+							fmt.Printf("      BlobFeeCap: %s\n", feeCap.String())
+						}
+						hashes := tx.BlobHashes()
+						if hashes != nil {
+							fmt.Printf("      BlobHashes: %d\n", len(hashes))
+							for bi, bh := range hashes {
+								fmt.Printf("        - blob[%d] hash: %s\n", bi, bh.Hex())
+							}
+						}
+					}
+				}
 
-				_, err = transaction.SendBlob(client, blobTx, opts)
-				if err != nil {
+				// 使用 DevP2P Gossip 流发送 blob（宣告→拉取→回包），不经过 RPC
+				if len(blobTx) == 0 {
 					stats.Failed++
 				} else {
-					stats.Success++
+					tx := blobTx[0]
+					// 记录本次尝试的交易哈希（无论发送成功或失败）
+					hashesMu.Lock()
+					nodeHashes[nodeIdx] = append(nodeHashes[nodeIdx], tx.Hash())
+					hashesMu.Unlock()
+					if err := transaction.SendBlobViaGossip(client.GetSuite(), tx); err != nil {
+						stats.Failed++
+					} else {
+						// 可选：针对多节点压力测试，此处不做每笔验证以提升吞吐
+						stats.Success++
+					}
 				}
 
 				stats.TotalSent++
@@ -316,6 +366,41 @@ func (t *BlobMultiNodeTest) Run(cfg *config.Config) error {
 	fmt.Printf("  ⏱️  Total Duration: %v\n", totalDuration)
 	if totalSuccess > 0 {
 		fmt.Printf("  📊 Overall Rate: %.2f tx/sec\n", float64(totalSuccess)/totalDuration.Seconds())
+	}
+
+	// 保存所有节点的交易哈希（分组并添加节点标注）到指定文件
+	if len(nodeHashes) > 0 {
+		hashFile := "/home/kkk/workspaces/FIST/TxNetworkFuzz/cmd/manual/txhashes.txt"
+		var b strings.Builder
+		for _, stats := range nodeStats {
+			if stats == nil {
+				continue
+			}
+			hashes := nodeHashes[stats.NodeIndex]
+			if len(hashes) == 0 {
+				continue
+			}
+			// 节点标注头（仅输出节点名称，不含索引）
+			b.WriteString(fmt.Sprintf("# %s\n", stats.NodeName))
+			for _, h := range hashes {
+				b.WriteString(h.Hex())
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
+		content := b.String()
+		if content != "" {
+			if err := utils.WriteStringToFile(hashFile, content); err != nil {
+				fmt.Printf("⚠️  Warning: Failed to save transaction hashes: %v\n", err)
+			} else {
+				// 统计总写入条数
+				count := 0
+				for _, hs := range nodeHashes {
+					count += len(hs)
+				}
+				fmt.Printf("💾 Saved %d transaction hash(es) to %s\n", count, hashFile)
+			}
+		}
 	}
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════════════════════════════")

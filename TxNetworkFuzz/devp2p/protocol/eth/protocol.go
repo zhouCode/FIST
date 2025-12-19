@@ -52,9 +52,9 @@ type Hello = protoHandshake
 type Proto int
 
 const (
-	baseProto Proto = iota
-	ethProto
-	snapProto
+    baseProto Proto = iota
+    ethProto
+    snapProto
 )
 
 // getProto returns the protocol a certain message code is associated with
@@ -75,14 +75,20 @@ func getProto(code uint64) Proto {
 // protoOffset will return the offset at which the specified protocol's messages
 // begin.
 func protoOffset(proto Proto) uint64 {
-	switch proto {
-	case baseProto:
-		return 0
-	case ethProto:
-		return baseProtoLen
-	case snapProto:
-		return baseProtoLen + ethProtoLen
-	default:
-		panic("unhandled protocol")
-	}
+    switch proto {
+    case baseProto:
+        return 0
+    case ethProto:
+        return baseProtoLen
+    case snapProto:
+        return baseProtoLen + ethProtoLen
+    default:
+        panic("unhandled protocol")
+    }
 }
+
+// Exported helpers to reference protocol IDs from other packages
+// without exposing internal constants directly.
+func BaseProto() Proto { return baseProto }
+func EthProto() Proto  { return ethProto }
+func SnapProto() Proto { return snapProto }

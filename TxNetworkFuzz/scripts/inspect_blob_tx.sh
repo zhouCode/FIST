@@ -33,6 +33,7 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 
 # Query transaction
+echo -e "${CYAN}RPC Endpoint: ${NC}${BLUE}$ENDPOINT${NC}"
 echo -e "${BLUE}🔍 Querying transaction...${NC}"
 TX_RESPONSE=$(curl -s -X POST -H "Content-Type: application/json" \
     --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionByHash\",\"params\":[\"$TX_HASH\"],\"id\":1}" \

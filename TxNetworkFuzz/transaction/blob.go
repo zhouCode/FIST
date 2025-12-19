@@ -7,11 +7,11 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/holiman/uint256"
 
 	"github.com/AgnopraxLab/D2PFuzz/blob"
 	"github.com/AgnopraxLab/D2PFuzz/config"
-	ethtest "github.com/AgnopraxLab/D2PFuzz/devp2p/protocol/eth"
 )
 
 // BlobTxBuilder provides a fluent interface for building blob transactions
@@ -173,24 +173,33 @@ func (b *BlobTxBuilder) Build() (txs types.Transactions, err error) {
 	for i, blobData := range b.blobs {
 		versionedHashes[i] = blobData.VersionedHash
 	}
+	// Build sidecar components from provided blobs
+	blobsArr := make([]kzg4844.Blob, len(b.blobs))
+	commitmentsArr := make([]kzg4844.Commitment, len(b.blobs))
+	proofsArr := make([]kzg4844.Proof, len(b.blobs))
+	for i, bd := range b.blobs {
+		blobsArr[i] = bd.Blob
+		commitmentsArr[i] = bd.Commitment
+		proofsArr[i] = bd.Proof
+	}
+	// The first parameter in NewBlobTxSidecar currently only supports BlobSidecarVersion1. If you want to test version verification, you can modify it directly through hard coding
+	sidecar := types.NewBlobTxSidecar(types.BlobSidecarVersion0, blobsArr, commitmentsArr, proofsArr)
+	toAddr := common.HexToAddress(b.to.Address)
 	txs = make([]*types.Transaction, 0)
 	//==========================================
 	for i := 0; i < b.count; i++ {
-		// Make blob data, max of 2 blobs per tx.
-		blobdata := make([]byte, b.blobsCount%3)
-		for j := range blobdata {
-			blobdata[j] = b.discriminator
-			b.blobsCount -= 1
-		}
 		inner := &types.BlobTx{
 			ChainID:    uint256.MustFromBig(b.chainID),
 			Nonce:      b.nonce + uint64(i),
 			GasTipCap:  uint256.MustFromBig(b.gasTipCap),
 			GasFeeCap:  uint256.MustFromBig(b.gasFeeCap),
 			Gas:        b.gas,
+			To:         toAddr,
+			Value:      uint256.MustFromBig(b.value),
+			Data:       b.data,
 			BlobFeeCap: uint256.MustFromBig(b.maxFeePerBlobGas),
-			BlobHashes: ethtest.MakeSidecar(blobdata...).BlobHashes(),
-			Sidecar:    ethtest.MakeSidecar(blobdata...),
+			BlobHashes: versionedHashes,
+			Sidecar:    sidecar,
 		}
 		tx, err := types.SignTx(types.NewTx(inner), types.NewCancunSigner(b.chainID), privateKey)
 		if err != nil {
@@ -325,4 +334,13 @@ func CreateSimpleBlobTransaction(
 		return nil, fmt.Errorf("failed to build blob transaction: %w", err)
 	}
 	return tx, nil
+}
+
+// WithCount sets how many transactions to build from the same blob set
+func (b *BlobTxBuilder) WithCount(count int) *BlobTxBuilder {
+	if count <= 0 {
+		count = 1
+	}
+	b.count = count
+	return b
 }

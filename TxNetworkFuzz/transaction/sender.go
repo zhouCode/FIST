@@ -3,6 +3,7 @@ package transaction
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -134,7 +135,7 @@ func Verify(client *ethclient.Client, txHashes []common.Hash, timeout time.Durat
 		GetPooledTransactionsRequest: txHashes,
 	}
 
-	if err := conn.Write(1, eth.GetPooledTransactionsMsg, req); err != nil {
+	if err := conn.Write(ethtest.EthProto(), eth.GetPooledTransactionsMsg, req); err != nil {
 		return fmt.Errorf("failed to write verification request: %w", err)
 	}
 
@@ -145,7 +146,7 @@ func Verify(client *ethclient.Client, txHashes []common.Hash, timeout time.Durat
 
 	// Read response
 	resp := new(eth.PooledTransactionsPacket)
-	if err := conn.ReadMsg(1, eth.PooledTransactionsMsg, resp); err != nil {
+	if err := conn.ReadMsg(ethtest.EthProto(), eth.PooledTransactionsMsg, resp); err != nil {
 		return fmt.Errorf("failed to read verification response: %w", err)
 	}
 
@@ -187,7 +188,7 @@ func Query(client *ethclient.Client, txHashes []common.Hash) ([]*types.Transacti
 		GetPooledTransactionsRequest: txHashes,
 	}
 
-	if err = conn.Write(1, eth.GetPooledTransactionsMsg, req); err != nil {
+	if err = conn.Write(ethtest.EthProto(), eth.GetPooledTransactionsMsg, req); err != nil {
 		return nil, fmt.Errorf("failed to write transaction query: %w", err)
 	}
 
@@ -198,7 +199,7 @@ func Query(client *ethclient.Client, txHashes []common.Hash) ([]*types.Transacti
 	}
 
 	resp := new(eth.PooledTransactionsPacket)
-	if err := conn.ReadMsg(1, eth.PooledTransactionsMsg, resp); err != nil {
+	if err := conn.ReadMsg(ethtest.EthProto(), eth.PooledTransactionsMsg, resp); err != nil {
 		return nil, fmt.Errorf("failed to read transaction response: %w", err)
 	}
 
@@ -392,7 +393,7 @@ func SendTxs(s *ethtest.Suite, txs []*types.Transaction) error {
 			if err != nil {
 				fmt.Errorf("invalid GetBlockHeaders request: %v", err)
 			}
-			recvConn.Write(1, eth.BlockHeadersMsg, &eth.BlockHeadersPacket{
+			recvConn.Write(ethtest.EthProto(), eth.BlockHeadersMsg, &eth.BlockHeadersPacket{
 				RequestId:           msg.RequestId,
 				BlockHeadersRequest: headers,
 			})
@@ -416,7 +417,7 @@ func SendTxs(s *ethtest.Suite, txs []*types.Transaction) error {
 }
 
 func SendTxsWithoutRecv(s *ethtest.Suite, txs []*types.Transaction) error {
-	// Open sending conn.
+	// Open sending conn only.
 	sendConn, err := s.Dial()
 	if err != nil {
 		return err
@@ -426,19 +427,120 @@ func SendTxsWithoutRecv(s *ethtest.Suite, txs []*types.Transaction) error {
 		return fmt.Errorf("peering failed: %v", err)
 	}
 
-	// Open receiving conn.
-	recvConn, err := s.Dial()
-	if err != nil {
-		return err
-	}
-	defer recvConn.Close()
-	if err = recvConn.Peer(nil); err != nil {
-		return fmt.Errorf("peering failed: %v", err)
-	}
-
-	if err = sendConn.Write(1, eth.TransactionsMsg, eth.TransactionsPacket(txs)); err != nil {
+	// Use eth protocol (1) for message code selection.
+	if err = sendConn.Write(ethtest.EthProto(), eth.TransactionsMsg, eth.TransactionsPacket(txs)); err != nil {
 		return fmt.Errorf("failed to write message to connection: %v", err)
 	}
+	return nil
+}
 
+// SendBlobViaGossip 使用 DevP2P 的“宣告 + 请求 + 回包”流程发送单个 blob 交易，
+// 确保带 sidecar 的完整交易通过 PooledTransactionsMsg 交付给对端。
+func SendBlobViaGossip(s *ethtest.Suite, tx *types.Transaction) error {
+	if tx == nil {
+		return fmt.Errorf("nil transaction")
+	}
+	if tx.Type() != types.BlobTxType {
+		return fmt.Errorf("transaction type %d is not blob", tx.Type())
+	}
+	if tx.BlobTxSidecar() == nil {
+		return fmt.Errorf("blob transaction missing sidecar")
+	}
+
+	conn, err := s.Dial()
+	if err != nil {
+		return fmt.Errorf("dial failed: %w", err)
+	}
+	defer conn.Close()
+	if err := conn.Peer(nil); err != nil {
+		return fmt.Errorf("peering failed: %w", err)
+	}
+
+	// 1) 宣告哈希（NewPooledTransactionHashesMsg）
+	ann := eth.NewPooledTransactionHashesPacket{
+		Types: []byte{0xff},
+		// Sizes: []uint32{uint32(tx.Size())},
+		Sizes:  []uint32{uint32(math.MaxUint32)},
+		Hashes: []common.Hash{tx.Hash()},
+	}
+	if err := conn.Write(ethtest.EthProto(), eth.NewPooledTransactionHashesMsg, ann); err != nil {
+		return fmt.Errorf("announcement write failed: %w", err)
+	}
+
+	// 2) 等待对方的 GetPooledTransactions 请求
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return fmt.Errorf("set read deadline failed: %w", err)
+	}
+	req := new(eth.GetPooledTransactionsPacket)
+	if err := conn.ReadMsg(ethtest.EthProto(), eth.GetPooledTransactionsMsg, req); err != nil {
+		return fmt.Errorf("read pooled tx request failed: %w", err)
+	}
+	if len(req.GetPooledTransactionsRequest) == 0 {
+		return fmt.Errorf("unexpected pooled tx request: empty hashes")
+	}
+	if req.GetPooledTransactionsRequest[0] != tx.Hash() {
+		return fmt.Errorf("unexpected pooled tx request: got %s want %s", req.GetPooledTransactionsRequest[0].Hex(), tx.Hash().Hex())
+	}
+
+	// 3) 回包完整交易（含 sidecar）
+	resp := eth.PooledTransactionsPacket{
+		RequestId:                  req.RequestId,
+		PooledTransactionsResponse: eth.PooledTransactionsResponse(types.Transactions{tx}),
+	}
+	if err := conn.Write(ethtest.EthProto(), eth.PooledTransactionsMsg, resp); err != nil {
+		return fmt.Errorf("pooled tx response write failed: %w", err)
+	}
+	return nil
+}
+
+// SendBlobViaGossipAllowMissing 允许在负面测试场景下发送缺失 sidecar 的 blob 交易。
+// 除了不强制检查 sidecar 存在，其余流程与 SendBlobViaGossip 相同。
+func SendBlobViaGossipAllowMissing(s *ethtest.Suite, tx *types.Transaction) error {
+	if tx == nil {
+		return fmt.Errorf("nil transaction")
+	}
+	if tx.Type() != types.BlobTxType {
+		return fmt.Errorf("transaction type %d is not blob", tx.Type())
+	}
+
+	conn, err := s.Dial()
+	if err != nil {
+		return fmt.Errorf("dial failed: %w", err)
+	}
+	defer conn.Close()
+	if err := conn.Peer(nil); err != nil {
+		return fmt.Errorf("peering failed: %w", err)
+	}
+
+	ann := eth.NewPooledTransactionHashesPacket{
+		Types:  []byte{types.BlobTxType},
+		Sizes:  []uint32{uint32(tx.Size())},
+		Hashes: []common.Hash{tx.Hash()},
+	}
+	if err := conn.Write(ethtest.EthProto(), eth.NewPooledTransactionHashesMsg, ann); err != nil {
+		return fmt.Errorf("announcement write failed: %w", err)
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return fmt.Errorf("set read deadline failed: %w", err)
+	}
+	req := new(eth.GetPooledTransactionsPacket)
+	if err := conn.ReadMsg(ethtest.EthProto(), eth.GetPooledTransactionsMsg, req); err != nil {
+		return fmt.Errorf("read pooled tx request failed: %w", err)
+	}
+	if len(req.GetPooledTransactionsRequest) == 0 {
+		return fmt.Errorf("unexpected pooled tx request: empty hashes")
+	}
+	if req.GetPooledTransactionsRequest[0] != tx.Hash() {
+		return fmt.Errorf("unexpected pooled tx request: got %s want %s", req.GetPooledTransactionsRequest[0].Hex(), tx.Hash().Hex())
+	}
+
+	resp := eth.PooledTransactionsPacket{
+		RequestId:                  req.RequestId,
+		PooledTransactionsResponse: eth.PooledTransactionsResponse(types.Transactions{tx}),
+	}
+	if err := conn.Write(ethtest.EthProto(), eth.PooledTransactionsMsg, resp); err != nil {
+		return fmt.Errorf("pooled tx response write failed: %w", err)
+	}
 	return nil
 }

@@ -2,6 +2,7 @@ package testing
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/AgnopraxLab/D2PFuzz/config"
 )
@@ -28,6 +29,14 @@ func Register(name string, runner TestRunner) {
 
 // GetRunner returns a test runner by name
 func GetRunner(name string) (TestRunner, bool) {
+	// Normalize mode name to be more user-friendly
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+
+	if runner, ok := registry[normalized]; ok {
+		return runner, ok
+	}
+	// Fallback to the original name in case someone registered a custom alias
 	runner, ok := registry[name]
 	return runner, ok
 }

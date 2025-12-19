@@ -316,8 +316,7 @@ func (c *Conn) peer(status *eth.StatusPacket68) error {
 }
 
 func (c *Conn) Peer(status *eth.StatusPacket68) error {
-	c.peer(status)
-	return nil
+    return c.peer(status)
 }
 
 // handshake performs a protocol handshake with the node.

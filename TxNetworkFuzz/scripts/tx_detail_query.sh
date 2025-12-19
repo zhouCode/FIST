@@ -60,13 +60,19 @@ find_available_rpc() {
     return 1
 }
 
-# Hexadecimal to decimal conversion
+# Hexadecimal to decimal conversion (safe for big integers)
 hex_to_dec() {
     local hex_value=$1
     if [[ -z "$hex_value" || "$hex_value" == "null" ]]; then
         echo "0"
     else
-        echo $((16#${hex_value#0x}))
+        local cleaned=${hex_value#0x}
+        if command -v bc >/dev/null 2>&1; then
+            echo "obase=10; ibase=16; ${cleaned^^}" | bc
+        else
+            # Fallback (may overflow for very large values)
+            echo $((16#$cleaned))
+        fi
     fi
 }
 
@@ -82,6 +88,20 @@ wei_to_ether() {
             echo "scale=6; $wei_dec / 1000000000000000000" | bc
         else
             # If bc is not available, use awk
+            awk "BEGIN {printf \"%.6f\", $wei_dec / 1000000000000000000}"
+        fi
+    fi
+}
+
+# Convert decimal Wei to Ether (string-safe)
+wei_dec_to_eth() {
+    local wei_dec=$1
+    if [[ -z "$wei_dec" || "$wei_dec" == "0" ]]; then
+        echo "0.000000"
+    else
+        if command -v bc >/dev/null 2>&1; then
+            echo "scale=6; $wei_dec / 1000000000000000000" | bc
+        else
             awk "BEGIN {printf \"%.6f\", $wei_dec / 1000000000000000000}"
         fi
     fi
@@ -127,6 +147,19 @@ format_number() {
     fi
 }
 
+# Human-friendly transaction type name
+get_tx_type_name() {
+    local type_hex=$1
+    case "${type_hex,,}" in
+        ""|"null") echo "Legacy (pre-typed)" ;;
+        "0x0") echo "Legacy (pre-typed)" ;;
+        "0x1") echo "Access List (EIP-2930)" ;;
+        "0x2") echo "Dynamic Fee (EIP-1559)" ;;
+        "0x3") echo "Blob (EIP-4844)" ;;
+        *) echo "Typed (${type_hex})" ;;
+    esac
+}
+
 # Query transaction details
 query_transaction_details() {
     local tx_hash=$1
@@ -164,6 +197,9 @@ query_transaction_details() {
     local gas_limit=$(echo "$tx_response" | grep -o '"gas":"[^"]*"' | cut -d'"' -f4)
     local gas_price=$(echo "$tx_response" | grep -o '"gasPrice":"[^"]*"' | cut -d'"' -f4)
     local input_data=$(echo "$tx_response" | grep -o '"input":"[^"]*"' | cut -d'"' -f4)
+    local tx_type=$(echo "$tx_response" | grep -o '"type":"[^"]*"' | cut -d'"' -f4)
+    local max_priority=$(echo "$tx_response" | grep -o '"maxPriorityFeePerGas":"[^"]*"' | cut -d'"' -f4)
+    local max_fee=$(echo "$tx_response" | grep -o '"maxFeePerGas":"[^"]*"' | cut -d'"' -f4)
     
     # Basic transaction information
     echo -e "\n${GREEN}📋 Basic Transaction Information:${NC}"
@@ -178,8 +214,12 @@ query_transaction_details() {
     echo "Transaction Index: ${tx_index:+$(hex_to_dec "$tx_index")}"
     echo "From: ${from_addr:-N/A}"
     echo "To: ${to_addr:-Contract creation}"
-    echo "Transfer Amount: $(wei_to_ether "$value") ETH"
+    # Amount in Wei (with ETH in parentheses)
+    local value_wei_dec=$(hex_to_dec "$value")
+    local value_eth=$(wei_dec_to_eth "$value_wei_dec")
+    echo "Transfer Amount: $(format_number "$value_wei_dec") Wei (${value_eth} ETH)"
     echo "Nonce: ${nonce:+$(hex_to_dec "$nonce")}"
+    echo "Transaction Type: $(get_tx_type_name "$tx_type")"
     
     # Gas information
     echo -e "\n${YELLOW}⛽ Gas Information:${NC}"
@@ -253,9 +293,14 @@ query_transaction_details() {
             if [[ -n "$gas_price" ]]; then
                 local gas_price_dec=$(hex_to_dec "$gas_price")
                 local gas_used_dec=$(hex_to_dec "$gas_used")
-                local tx_fee_wei=$((gas_price_dec * gas_used_dec))
-                local tx_fee_eth=$(wei_to_ether $(printf "0x%x" $tx_fee_wei))
-                echo "Transaction Fee: $tx_fee_eth ETH ($(format_number $tx_fee_wei) Wei)"
+                local tx_fee_wei_dec
+                if command -v bc >/dev/null 2>&1; then
+                    tx_fee_wei_dec=$(echo "$gas_price_dec * $gas_used_dec" | bc)
+                else
+                    tx_fee_wei_dec=$((gas_price_dec * gas_used_dec))
+                fi
+                local tx_fee_eth=$(wei_dec_to_eth "$tx_fee_wei_dec")
+                echo "Transaction Fee: $(format_number "$tx_fee_wei_dec") Wei ($tx_fee_eth ETH)"
             fi
         fi
         
@@ -328,7 +373,9 @@ query_transaction_details() {
         
         if [[ $? -eq 0 ]] && echo "$from_balance_response" | grep -q '"result"'; then
             local from_balance=$(echo "$from_balance_response" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
-            echo "Sender Balance: $(wei_to_ether "$from_balance") ETH ($from_addr)"
+            local from_balance_dec=$(hex_to_dec "$from_balance")
+            local from_balance_eth=$(wei_dec_to_eth "$from_balance_dec")
+            echo "Sender Balance: $(format_number "$from_balance_dec") Wei (${from_balance_eth} ETH) ($from_addr)"
         fi
     fi
     
@@ -339,7 +386,9 @@ query_transaction_details() {
         
         if [[ $? -eq 0 ]] && echo "$to_balance_response" | grep -q '"result"'; then
             local to_balance=$(echo "$to_balance_response" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
-            echo "Receiver Balance: $(wei_to_ether "$to_balance") ETH ($to_addr)"
+            local to_balance_dec=$(hex_to_dec "$to_balance")
+            local to_balance_eth=$(wei_dec_to_eth "$to_balance_dec")
+            echo "Receiver Balance: $(format_number "$to_balance_dec") Wei (${to_balance_eth} ETH) ($to_addr)"
         fi
     fi
     
