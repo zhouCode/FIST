@@ -1622,7 +1622,7 @@ func TestSoftLimitForReport(config *Config) {
 	fmt.Println("\n" + strings.Repeat("-", 80))
 	fmt.Println("Markdown format (copy-paste ready):")
 	fmt.Println(strings.Repeat("-", 80))
-	fmt.Println("\n## NewPooledTransactionHashes Soft Limit Test Results\n")
+	fmt.Println("\n## NewPooledTransactionHashes Soft Limit Test Results")
 	fmt.Println("| Client     | 4096 items | 5000 items | 8192 items | Status               |")
 	fmt.Println("|------------|-----------|-----------|-----------|----------------------|")
 
